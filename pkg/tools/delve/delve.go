@@ -58,7 +58,8 @@ type DelveSession struct {
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
 	stderr    io.ReadCloser
-	scanner   *bufio.Scanner
+	reader    *bufio.Reader
+	outputCh  chan string // Broadcast channel for output chunks
 	host      string
 	port      int
 	mu        sync.Mutex
@@ -73,36 +74,34 @@ type Tool struct {
 	sessionMu sync.RWMutex
 }
 
-func (d *Tool) DelveHandler(ctx context.Context, session *mcp.ServerSession, params *mcp.CallToolParamsFor[Input]) (*mcp.CallToolResultFor[Output], error) {
-	input := params.Arguments
-
+func (d *Tool) DelveHandler(ctx context.Context, req *mcp.CallToolRequest, params *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input using validator
-	if err := d.validator.Struct(input); err != nil {
-		return nil, fmt.Errorf("validation error: %w", err)
+	if err := d.validator.Struct(params); err != nil {
+		return nil, nil, fmt.Errorf("validation error: %w", err)
 	}
 
 	host := "localhost"
-	if input.Host != "" {
-		host = input.Host
+	if params.Host != "" {
+		host = params.Host
 	}
 
 	port := 2345
-	if input.Port != 0 {
-		port = input.Port
+	if params.Port != 0 {
+		port = params.Port
 	}
 
 	action := "command"
-	if input.Action != "" {
-		action = input.Action
+	if params.Action != "" {
+		action = params.Action
 	}
 
-	// Fallback to MCP session ID if no session_id provided
-	if input.SessionID == "" {
-		input.SessionID = session.ID()
+	// Fallback to generated session ID if no session_id provided
+	if params.SessionID == "" {
+		params.SessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	}
 
 	// Non-session mode (backward compatibility)
-	return d.handleSessionOperation(ctx, input, host, port, action)
+	return d.handleSessionOperation(ctx, *params, host, port, action)
 }
 
 func (d *Tool) Register(srv *server.Server) {
@@ -146,7 +145,7 @@ func (d *Tool) connectSession(_ context.Context, sessionID, host string, port in
 	// Create a background context that won't be cancelled when the calling context ends
 	// Using context.WithoutCancel would be better but requires Go 1.21+
 	backgroundCtx, cancel := context.WithCancel(context.Background())
-	
+
 	// Create command with the background context
 	cmd := exec.CommandContext(backgroundCtx, "dlv", "connect", addr) //nolint:contextcheck // intentionally using a detached context for background process
 
@@ -184,7 +183,8 @@ func (d *Tool) connectSession(_ context.Context, sessionID, host string, port in
 		stdin:     stdin,
 		stdout:    stdout,
 		stderr:    stderr,
-		scanner:   bufio.NewScanner(stdout),
+		reader:    bufio.NewReader(stdout),
+		outputCh:  make(chan string, 100), // Buffered channel for output
 		host:      host,
 		port:      port,
 		lastUsed:  time.Now(),
@@ -196,10 +196,49 @@ func (d *Tool) connectSession(_ context.Context, sessionID, host string, port in
 		_ = cmd.Wait()
 	}()
 
-	// Read initial prompt
-	time.Sleep(sessionStartupDelay)
+	// Start persistent reader goroutine that broadcasts output
+	go func() {
+		defer close(session.outputCh)
+		buf := make([]byte, 1024)
+		for {
+			n, err := session.reader.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				d.logger.Debug().Str("chunk", chunk).Msg("Reader goroutine read chunk")
+				session.outputCh <- chunk
+			}
+			if err != nil {
+				if err != io.EOF {
+					d.logger.Error().Err(err).Msg("Reader goroutine error")
+				}
+				d.logger.Debug().Msg("Reader goroutine exiting")
+				return
+			}
+		}
+	}()
 
-	return session, nil
+	// Read initial prompt from output channel
+	d.logger.Debug().Msg("Reading initial prompt from output channel")
+	var initialOutput strings.Builder
+	timeout := time.After(sessionStartupDelay * 2)
+
+	for {
+		select {
+		case chunk, ok := <-session.outputCh:
+			if !ok {
+				return nil, errors.New("output channel closed before prompt received")
+			}
+			initialOutput.WriteString(chunk)
+			d.logger.Debug().Str("output", chunk).Msg("Read initial output chunk")
+			if strings.Contains(initialOutput.String(), "(dlv)") {
+				d.logger.Debug().Msg("Found initial prompt")
+				return session, nil
+			}
+		case <-timeout:
+			d.logger.Warn().Msg("Timeout waiting for initial prompt, proceeding anyway")
+			return session, nil
+		}
+	}
 }
 
 // executeCommand sends a command to an existing session and reads the response.
@@ -209,46 +248,103 @@ func (d *Tool) executeCommand(session *DelveSession, command string) (string, er
 
 	session.lastUsed = time.Now()
 
+	d.logger.Debug().Str("command", command).Msg("Executing command")
+
+	// Determine timeout based on command type
+	cmdTimeout := commandTimeout // Default 5 seconds
+	cmdWords := strings.Fields(command)
+	if len(cmdWords) > 0 {
+		switch cmdWords[0] {
+		case "continue", "c", "next", "n", "step", "s", "stepout", "so":
+			// Execution commands can take a long time or wait indefinitely
+			cmdTimeout = 30 * time.Second
+			d.logger.Debug().Msg("Using extended timeout for execution command")
+		case "break", "b", "clear", "clearall":
+			// Breakpoint commands sometimes take longer to respond
+			cmdTimeout = 10 * time.Second
+			d.logger.Debug().Msg("Using extended timeout for breakpoint command")
+		}
+	}
+
 	// Send command
 	if _, err := fmt.Fprintf(session.stdin, "%s\n", command); err != nil {
+		d.logger.Error().Err(err).Msg("Failed to send command")
 		return "", fmt.Errorf("failed to send command: %w", err)
 	}
+	d.logger.Debug().Msg("Command sent successfully")
 
-	// Read response with timeout
+	// Read response from output channel with grace period after prompt
+	d.logger.Debug().Msg("Reading response from output channel")
 	var output strings.Builder
-	done := make(chan bool)
-	var readErr error
+	chunkCount := 0
+	promptFound := false
+	skippedInitialPrompt := false         // Skip first prompt echo from previous command
+	gracePeriod := 500 * time.Millisecond // Grace period for buffered output
+	var graceTimer *time.Timer
+	commandTimer := time.NewTimer(cmdTimeout)
+	defer commandTimer.Stop()
 
-	go func() {
-		scanner := bufio.NewScanner(session.stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			output.WriteString(line)
-			output.WriteString("\n")
+	hasNonPromptOutput := false
+
+	for {
+		var timeout <-chan time.Time
+		if promptFound && graceTimer != nil {
+			timeout = graceTimer.C
+		}
+
+		select {
+		case chunk, ok := <-session.outputCh:
+			if !ok {
+				d.logger.Error().Msg("Output channel closed unexpectedly")
+				return output.String(), errors.New("output channel closed")
+			}
+
+			chunkCount++
+			d.logger.Debug().Int("chunk_num", chunkCount).Str("chunk", chunk).Str("chunk_bytes", fmt.Sprintf("%q", chunk)).Msg("Read chunk")
+
+			trimmed := strings.TrimSpace(chunk)
+
+			// Skip the first prompt we see (it's usually the echo from the previous command)
+			if !skippedInitialPrompt && chunkCount == 1 && (trimmed == "(dlv)" || trimmed == ">") {
+				d.logger.Debug().Msg("Skipping initial prompt echo from previous command")
+				skippedInitialPrompt = true
+				continue // Don't add this to output
+			}
+
+			output.WriteString(chunk)
+
+			// Track if we have non-prompt output
+			if trimmed != "" && trimmed != "(dlv)" && trimmed != ">" {
+				hasNonPromptOutput = true
+				d.logger.Debug().Str("trimmed", trimmed).Msg("Received non-prompt output")
+			} else if trimmed != "" {
+				d.logger.Debug().Str("trimmed", trimmed).Msg("Received prompt")
+			}
 
 			// Check for prompt indicating command completion
-			if strings.Contains(line, "(dlv)") || strings.Contains(line, ">") {
-				done <- true
-				return
+			// Only start grace period if we've seen actual output, not just the initial prompt
+			if !promptFound && hasNonPromptOutput && (strings.Contains(output.String(), "(dlv)") || strings.Contains(output.String(), ">")) {
+				d.logger.Debug().Msg("Found prompt after output, starting grace period")
+				promptFound = true
+				graceTimer = time.NewTimer(gracePeriod)
+			} else if promptFound && graceTimer != nil {
+				// Reset grace timer if we got more data
+				d.logger.Debug().Msg("Got more data after prompt, resetting grace timer")
+				if !graceTimer.Stop() {
+					<-graceTimer.C
+				}
+				graceTimer.Reset(gracePeriod)
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			readErr = err
-		}
-		done <- false
-	}()
 
-	// Wait for response with timeout
-	select {
-	case <-done:
-		if readErr != nil {
-			return output.String(), readErr
+		case <-timeout:
+			d.logger.Debug().Msg("Grace period expired after prompt, finishing")
+			return output.String(), nil
+
+		case <-commandTimer.C:
+			d.logger.Warn().Dur("timeout", cmdTimeout).Msg("Command timed out")
+			return output.String(), errors.New("command timed out")
 		}
-	case <-time.After(commandTimeout):
-		return output.String(), errors.New("command timed out")
 	}
-
-	return output.String(), nil
 }
 
 // disconnectSession closes a Delve session.
@@ -312,7 +408,7 @@ func (d *Tool) cleanupSession(session *DelveSession) {
 }
 
 // handleSessionOperation handles session-based operations.
-func (d *Tool) handleSessionOperation(ctx context.Context, input Input, host string, port int, action string) (*mcp.CallToolResultFor[Output], error) {
+func (d *Tool) handleSessionOperation(ctx context.Context, input Input, host string, port int, action string) (*mcp.CallToolResult, any, error) {
 	switch action {
 	case "connect":
 		return d.handleConnect(ctx, input, host, port)
@@ -321,22 +417,22 @@ func (d *Tool) handleSessionOperation(ctx context.Context, input Input, host str
 	case "command":
 		return d.handleCommand(input)
 	default:
-		return nil, fmt.Errorf("unsupported action: %s. Use 'connect', 'disconnect', or 'command'", action)
+		return nil, nil, fmt.Errorf("unsupported action: %s. Use 'connect', 'disconnect', or 'command'", action)
 	}
 }
 
 // handleConnect creates a new Delve session.
-func (d *Tool) handleConnect(ctx context.Context, input Input, host string, port int) (*mcp.CallToolResultFor[Output], error) {
+func (d *Tool) handleConnect(ctx context.Context, input Input, host string, port int) (*mcp.CallToolResult, any, error) {
 	d.sessionMu.Lock()
 	if _, exists := d.sessions[input.SessionID]; exists {
 		d.sessionMu.Unlock()
-		return nil, fmt.Errorf("session %s already exists", input.SessionID)
+		return nil, nil, fmt.Errorf("session %s already exists", input.SessionID)
 	}
 
 	session, err := d.connectSession(ctx, input.SessionID, host, port)
 	if err != nil {
 		d.sessionMu.Unlock()
-		return nil, err
+		return nil, nil, err
 	}
 
 	d.sessions[input.SessionID] = session
@@ -344,44 +440,36 @@ func (d *Tool) handleConnect(ctx context.Context, input Input, host string, port
 
 	resultText := fmt.Sprintf("Connected to Delve debugger at %s:%d\nSession ID: %s\nSession established. Use 'command' action to send debugging commands.", host, port, input.SessionID)
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
 
 // handleDisconnect disconnects a Delve session.
-func (d *Tool) handleDisconnect(input Input) (*mcp.CallToolResultFor[Output], error) {
+func (d *Tool) handleDisconnect(input Input) (*mcp.CallToolResult, any, error) {
 	if err := d.disconnectSession(input.SessionID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	resultText := "Disconnected Delve session: " + input.SessionID
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
 
 // handleCommand executes a command in an existing session.
-func (d *Tool) handleCommand(input Input) (*mcp.CallToolResultFor[Output], error) {
+func (d *Tool) handleCommand(input Input) (*mcp.CallToolResult, any, error) {
 	d.sessionMu.RLock()
 	session, exists := d.sessions[input.SessionID]
 	d.sessionMu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("session %s not found. Use 'connect' action first", input.SessionID)
+		return nil, nil, fmt.Errorf("session %s not found. Use 'connect' action first", input.SessionID)
 	}
 
 	command := "help"
@@ -391,7 +479,7 @@ func (d *Tool) handleCommand(input Input) (*mcp.CallToolResultFor[Output], error
 
 	output, err := d.executeCommand(session, command)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute command: %w", err)
+		return nil, nil, fmt.Errorf("failed to execute command: %w", err)
 	}
 
 	// Apply pagination
@@ -430,15 +518,11 @@ func (d *Tool) handleCommand(input Input) (*mcp.CallToolResultFor[Output], error
 	}
 	resultText += "\n" + strings.TrimSpace(paginatedOutput)
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
 
 func New(logger zerolog.Logger) tools.Tool {

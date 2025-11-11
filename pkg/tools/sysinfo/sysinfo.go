@@ -71,13 +71,13 @@ func (s *Tool) Register(srv *server.Server) {
 	s.logger.Debug().Msg("sysinfo tool registered")
 }
 
-func (s *Tool) SysInfoHandler(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[Input]) (*mcp.CallToolResultFor[SystemInfo], error) {
-	input := params.Arguments
-
+func (s *Tool) SysInfoHandler(ctx context.Context, req *mcp.CallToolRequest, params *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input using validator
-	if err := s.validator.Struct(input); err != nil {
-		return nil, fmt.Errorf("validation error: %w", err)
+	if err := s.validator.Struct(params); err != nil {
+		return nil, nil, fmt.Errorf("validation error: %w", err)
 	}
+
+	input := params
 
 	// Determine if this is local or remote execution
 	var conn *ssh.Connector
@@ -95,7 +95,7 @@ func (s *Tool) SysInfoHandler(ctx context.Context, _ *mcp.ServerSession, params 
 
 		// Test connection
 		if err := conn.TestConnection(ctx); err != nil {
-			return nil, fmt.Errorf("failed to connect to %s: %v", target, err)
+			return nil, nil, fmt.Errorf("failed to connect to %s: %v", target, err)
 		}
 	} else {
 		s.logger.Info().Msg("Gathering local system information")
@@ -111,18 +111,18 @@ func (s *Tool) SysInfoHandler(ctx context.Context, _ *mcp.ServerSession, params 
 	maxLines := types.MaxDefaultLines
 	if input.MaxLines > 0 {
 		if input.MaxLines > types.MaxAllowedLines {
-			return nil, errors.New("max_lines cannot exceed 100000")
+			return nil, nil, errors.New("max_lines cannot exceed 100000")
 		}
 		maxLines = input.MaxLines
 	} else if input.MaxLines < 0 {
-		return nil, errors.New("max_lines cannot be negative")
+		return nil, nil, errors.New("max_lines cannot be negative")
 	}
 
 	offset := 0
 	if input.Offset >= 0 {
 		offset = input.Offset
 	} else if input.Offset < 0 {
-		return nil, errors.New("offset cannot be negative")
+		return nil, nil, errors.New("offset cannot be negative")
 	}
 
 	lines := strings.Split(output, "\n")
@@ -147,13 +147,11 @@ func (s *Tool) SysInfoHandler(ctx context.Context, _ *mcp.ServerSession, params 
 			offset+1, offset+len(lines), totalLines, paginatedOutput)
 	}
 
-	return &mcp.CallToolResultFor[SystemInfo]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func (s *Tool) executeCommand(ctx context.Context, command string, conn *ssh.Connector) (string, error) {

@@ -55,13 +55,13 @@ func (p *Tool) Register(srv *server.Server) {
 	p.logger.Debug().Msg("pprof tool registered")
 }
 
-func (p *Tool) PprofHandler(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[Input]) (*mcp.CallToolResultFor[Output], error) {
-	input := params.Arguments
-
+func (p *Tool) PprofHandler(ctx context.Context, req *mcp.CallToolRequest, params *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input using validator
-	if err := p.validator.Struct(input); err != nil {
-		return nil, fmt.Errorf("validation error: %w", err)
+	if err := p.validator.Struct(params); err != nil {
+		return nil, nil, fmt.Errorf("validation error: %w", err)
 	}
+
+	input := params
 
 	host := "localhost"
 	if input.Host != "" {
@@ -89,7 +89,7 @@ func (p *Tool) PprofHandler(ctx context.Context, _ *mcp.ServerSession, params *m
 	if profile == "" || profile == "list" {
 		profiles, err := p.fetchAvailableProfiles(ctx, baseURL)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		resultText := fmt.Sprintf("Available pprof profiles at %s:\n\n", baseURL)
@@ -100,14 +100,11 @@ func (p *Tool) PprofHandler(ctx context.Context, _ *mcp.ServerSession, params *m
 		resultText += "Example: profile='heap' or profile='goroutine'\n"
 		resultText += "For CPU profiling, use profile='profile' with optional seconds parameter."
 
-		result := &mcp.CallToolResultFor[Output]{
+		return &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: resultText,
-				},
+				&mcp.TextContent{Text: resultText},
 			},
-		}
-		return result, nil
+		}, nil, nil
 	}
 
 	var profileURL string
@@ -131,7 +128,7 @@ func (p *Tool) PprofHandler(ctx context.Context, _ *mcp.ServerSession, params *m
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute go tool pprof: %w\nOutput: %s", err, string(output))
+		return nil, nil, fmt.Errorf("failed to execute go tool pprof: %w\nOutput: %s", err, string(output))
 	}
 
 	// Apply pagination
@@ -166,15 +163,11 @@ func (p *Tool) PprofHandler(ctx context.Context, _ *mcp.ServerSession, params *m
 	}
 	resultText += "\n" + strings.TrimSpace(paginatedOutput)
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
 
 // fetchAvailableProfiles fetches the pprof index page and extracts available profile links.

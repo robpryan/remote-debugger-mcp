@@ -63,67 +63,65 @@ func (s *Tool) Register(srv *server.Server) {
 	s.logger.Debug().Msg("sshexec tool registered")
 }
 
-func (s *Tool) SSHExecHandler(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[Input]) (*mcp.CallToolResultFor[Output], error) {
-	input := params.Arguments
-
+func (s *Tool) SSHExecHandler(ctx context.Context, req *mcp.CallToolRequest, params *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input using validator
-	if err := s.validator.Struct(input); err != nil {
-		return nil, fmt.Errorf("validation error: %w", err)
+	if err := s.validator.Struct(params); err != nil {
+		return nil, nil, fmt.Errorf("validation error: %w", err)
 	}
 
 	// Additional validation for required fields based on mode
-	if input.Host == "" {
-		return nil, errors.New("host is required")
+	if params.Host == "" {
+		return nil, nil, errors.New("host is required")
 	}
 
 	// Determine operation mode
-	isKillMode := input.KillPID > 0 || input.KillByName != ""
-	isExecMode := input.BinaryPath != ""
+	isKillMode := params.KillPID > 0 || params.KillByName != ""
+	isExecMode := params.BinaryPath != ""
 
 	// Validate operation mode
 	if isKillMode && isExecMode {
-		return nil, errors.New("cannot specify both kill parameters and binary_path - choose either kill or exec mode")
+		return nil, nil, errors.New("cannot specify both kill parameters and binary_path - choose either kill or exec mode")
 	}
 	if !isKillMode && !isExecMode {
-		return nil, errors.New("must specify either kill parameters (kill_pid or kill_by_name) or binary_path for execution")
+		return nil, nil, errors.New("must specify either kill parameters (kill_pid or kill_by_name) or binary_path for execution")
 	}
-	if input.KillPID > 0 && input.KillByName != "" {
-		return nil, errors.New("cannot specify both kill_pid and kill_by_name - choose one")
+	if params.KillPID > 0 && params.KillByName != "" {
+		return nil, nil, errors.New("cannot specify both kill_pid and kill_by_name - choose one")
 	}
 
 	// Set defaults
 	port := 22
-	if input.Port != 0 {
-		port = input.Port
+	if params.Port != 0 {
+		port = params.Port
 	}
 
-	user := input.User
+	user := params.User
 
 	// Create SSH connector
-	conn := ssh.New(input.Host, port, user)
+	conn := ssh.New(params.Host, port, user)
 
 	if isKillMode {
-		return s.handleKillMode(ctx, input, conn)
+		return s.handleKillMode(ctx, *params, conn)
 	}
 
 	maxLines := types.MaxDefaultLines
-	if input.MaxLines > 0 {
-		if input.MaxLines > types.MaxAllowedLines {
-			return nil, errors.New("max_lines cannot exceed 100000")
+	if params.MaxLines > 0 {
+		if params.MaxLines > types.MaxAllowedLines {
+			return nil, nil, errors.New("max_lines cannot exceed 100000")
 		}
-		maxLines = input.MaxLines
+		maxLines = params.MaxLines
 	}
 
 	offset := 0
-	if input.Offset >= 0 {
-		offset = input.Offset
-	} else if input.Offset < 0 {
-		return nil, errors.New("offset cannot be negative")
+	if params.Offset >= 0 {
+		offset = params.Offset
+	} else if params.Offset < 0 {
+		return nil, nil, errors.New("offset cannot be negative")
 	}
-	return s.handleExecMode(ctx, input, conn, maxLines, offset)
+	return s.handleExecMode(ctx, *params, conn, maxLines, offset)
 }
 
-func (s *Tool) handleKillMode(ctx context.Context, input Input, conn *ssh.Connector) (*mcp.CallToolResultFor[Output], error) {
+func (s *Tool) handleKillMode(ctx context.Context, input Input, conn *ssh.Connector) (*mcp.CallToolResult, any, error) {
 	signal := "TERM"
 	if input.KillSignal != "" {
 		signal = input.KillSignal
@@ -152,26 +150,24 @@ func (s *Tool) handleKillMode(ctx context.Context, input Input, conn *ssh.Connec
 
 	output, exitCode, err := conn.ExecuteCommandWithExitCode(ctx, remoteCommand)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute kill command: %v", err)
+		return nil, nil, fmt.Errorf("failed to execute kill command: %v", err)
 	}
 
 	resultText := fmt.Sprintf("SSH Kill output for %s (operation: %s):\n", conn.GetTarget(), operation)
 	resultText += fmt.Sprintf("Exit Code: %d\n", exitCode)
 	resultText += "\n" + strings.TrimSpace(output)
 
-	return &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}, nil
+	}, nil, nil
 }
 
-func (s *Tool) handleExecMode(ctx context.Context, input Input, conn *ssh.Connector, maxLines, offset int) (*mcp.CallToolResultFor[Output], error) {
+func (s *Tool) handleExecMode(ctx context.Context, input Input, conn *ssh.Connector, maxLines, offset int) (*mcp.CallToolResult, any, error) {
 	// Check if binary exists
 	if _, err := os.Stat(input.BinaryPath); err != nil {
-		return nil, fmt.Errorf("binary not found: %v", err)
+		return nil, nil, fmt.Errorf("binary not found: %v", err)
 	}
 
 	remotePath := input.RemotePath
@@ -191,14 +187,14 @@ func (s *Tool) handleExecMode(ctx context.Context, input Input, conn *ssh.Connec
 
 	// Step 1: Transfer binary using scp
 	if err := conn.CopyFile(ctx, input.BinaryPath, remotePath); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Step 2: Make binary executable
 	if err := conn.MakeExecutable(ctx, remotePath); err != nil {
 		// Clean up the transferred binary on error
 		_ = conn.RemoveFile(ctx, remotePath)
-		return nil, fmt.Errorf("failed to make binary executable: %v", err)
+		return nil, nil, fmt.Errorf("failed to make binary executable: %v", err)
 	}
 
 	// Step 3: Execute binary with arguments
@@ -222,7 +218,7 @@ func (s *Tool) handleExecMode(ctx context.Context, input Input, conn *ssh.Connec
 
 	output, exitCode, err := conn.ExecuteCommandWithExitCode(ctx, remoteCommand)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute binary: %v", err)
+		return nil, nil, fmt.Errorf("failed to execute binary: %v", err)
 	}
 
 	resultText := fmt.Sprintf("SSH Exec output for %s (binary: %s):\n", conn.GetTarget(), filepath.Base(input.BinaryPath))
@@ -255,13 +251,11 @@ func (s *Tool) handleExecMode(ctx context.Context, input Input, conn *ssh.Connec
 		resultText += "\n" + strings.TrimSpace(paginatedOutput)
 	}
 
-	return &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}, nil
+	}, nil, nil
 }
 
 func New(logger zerolog.Logger) tools.Tool {

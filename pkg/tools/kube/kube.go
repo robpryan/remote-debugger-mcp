@@ -59,28 +59,26 @@ type Tool struct {
 	mu             sync.Mutex
 }
 
-func (k *Tool) KubeHandler(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[Input]) (*mcp.CallToolResultFor[Output], error) {
-	input := params.Arguments
-
+func (k *Tool) KubeHandler(ctx context.Context, req *mcp.CallToolRequest, params *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input using validator
-	if err := k.validator.Struct(input); err != nil {
-		return nil, fmt.Errorf("validation error: %w", err)
+	if err := k.validator.Struct(params); err != nil {
+		return nil, nil, fmt.Errorf("validation error: %w", err)
 	}
 
 	// Set defaults
-	if input.Namespace == "" {
-		input.Namespace = "default"
+	if params.Namespace == "" {
+		params.Namespace = "default"
 	}
 
-	switch input.Action {
+	switch params.Action {
 	case "port-forward":
-		return k.handlePortForward(ctx, &input)
+		return k.handlePortForward(ctx, params)
 	case "stop-port-forward":
-		return k.handleStopPortForward(ctx, &input)
+		return k.handleStopPortForward(ctx, params)
 	case "get", "create", "delete", "apply":
-		return k.handleKubectlCommand(ctx, &input)
+		return k.handleKubectlCommand(ctx, params)
 	default:
-		return nil, fmt.Errorf("unsupported action: %s. Supported actions: port-forward, stop-port-forward, get, create, delete, apply", input.Action)
+		return nil, nil, fmt.Errorf("unsupported action: %s. Supported actions: port-forward, stop-port-forward, get, create, delete, apply", params.Action)
 	}
 }
 
@@ -124,10 +122,10 @@ func (k *Tool) findAvailablePort(ctx context.Context, startPort int) int {
 	return 0
 }
 
-func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallToolResultFor[Output], error) {
+func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallToolResult, any, error) {
 	// Validate input
 	if input.Resource == "" {
-		return nil, errors.New("resource is required for port-forward (e.g., 'pod/my-pod', 'deployment/my-deployment', 'service/my-service')")
+		return nil, nil, errors.New("resource is required for port-forward (e.g., 'pod/my-pod', 'deployment/my-deployment', 'service/my-service')")
 	}
 
 	// Parse resource to get type and name (format: "type/name" or just "name")
@@ -145,7 +143,7 @@ func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallTo
 		resourceName = resourceParts[0]
 		resource = "pod/" + resourceName
 	default:
-		return nil, fmt.Errorf("unsupported resource format: %s (expected 'type/name' or 'name')", input.Resource)
+		return nil, nil, fmt.Errorf("unsupported resource format: %s (expected 'type/name' or 'name')", input.Resource)
 	}
 
 	// Normalize resource type aliases
@@ -159,7 +157,7 @@ func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallTo
 	case "pod", "deployment", "service":
 		// Already valid
 	default:
-		return nil, fmt.Errorf("unsupported resource type: %s (supported: pod, deployment, service)", resourceType)
+		return nil, nil, fmt.Errorf("unsupported resource type: %s (supported: pod, deployment, service)", resourceType)
 	}
 
 	// Set default local port
@@ -173,7 +171,7 @@ func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallTo
 		// Try to find an available port
 		availablePort := k.findAvailablePort(ctx, localPort)
 		if availablePort == 0 {
-			return nil, fmt.Errorf("port %d is not available and no alternative ports found in range %d-%d", localPort, localPort, localPort+maxPortRange)
+			return nil, nil, fmt.Errorf("port %d is not available and no alternative ports found in range %d-%d", localPort, localPort, localPort+maxPortRange)
 		}
 		k.logger.Info().Msgf("Port %d is not available, using port %d instead", localPort, availablePort)
 		localPort = availablePort
@@ -196,18 +194,18 @@ func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallTo
 	// Test connection first (for pods) or check resource exists (for deployments/services)
 	if resourceType == "pod" {
 		if err := connector.TestConnection(ctx); err != nil {
-			return nil, fmt.Errorf("failed to connect to pod %s in namespace %s: %w", resourceName, input.Namespace, err)
+			return nil, nil, fmt.Errorf("failed to connect to pod %s in namespace %s: %w", resourceName, input.Namespace, err)
 		}
 	} else {
 		// For deployments and services, check if the resource exists
 		if err := k.checkResourceExists(ctx, input.Namespace, resourceType, resourceName, input.KubeConfig, input.Context); err != nil {
-			return nil, fmt.Errorf("failed to verify %s %s in namespace %s: %w", resourceType, resourceName, input.Namespace, err)
+			return nil, nil, fmt.Errorf("failed to verify %s %s in namespace %s: %w", resourceType, resourceName, input.Namespace, err)
 		}
 	}
 
 	// Start port forwarding using the connector (works with pods, deployments, and services)
 	if err := connector.PortForward(ctx, localPort, remotePort); err != nil {
-		return nil, fmt.Errorf("failed to start port forwarding: %w", err)
+		return nil, nil, fmt.Errorf("failed to start port forwarding: %w", err)
 	}
 
 	// Wait a moment to ensure port forwarding is established
@@ -232,15 +230,11 @@ func (k *Tool) handlePortForward(ctx context.Context, input *Input) (*mcp.CallTo
 	}
 	k.logger.Debug().Msgf("Executed: %s", cmdStr)
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
 
 // checkResourceExists verifies that a Kubernetes resource exists.
@@ -278,40 +272,36 @@ func (k *Tool) checkResourceExists(ctx context.Context, namespace, resourceType,
 }
 
 // handleStopPortForward stops any active port forwarding.
-func (k *Tool) handleStopPortForward(_ context.Context, _ *Input) (*mcp.CallToolResultFor[Output], error) {
+func (k *Tool) handleStopPortForward(_ context.Context, _ *Input) (*mcp.CallToolResult, any, error) {
 	k.mu.Lock()
 	connector := k.lastConnector
 	k.mu.Unlock()
-	
+
 	if connector == nil {
-		return &mcp.CallToolResultFor[Output]{
+		return &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{
-					Text: "No active port forwarding found",
-				},
+				&mcp.TextContent{Text: "No active port forwarding found"},
 			},
-		}, nil
+		}, nil, nil
 	}
-	
+
 	if err := connector.StopPortForward(); err != nil {
-		return nil, fmt.Errorf("failed to stop port forwarding: %w", err)
+		return nil, nil, fmt.Errorf("failed to stop port forwarding: %w", err)
 	}
-	
+
 	k.mu.Lock()
 	k.lastConnector = nil
 	k.mu.Unlock()
-	
-	return &mcp.CallToolResultFor[Output]{
+
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: "Port forwarding stopped successfully",
-			},
+			&mcp.TextContent{Text: "Port forwarding stopped successfully"},
 		},
-	}, nil
+	}, nil, nil
 }
 
 // handleKubectlCommand handles generic kubectl commands (get, create, delete, apply).
-func (k *Tool) handleKubectlCommand(ctx context.Context, input *Input) (*mcp.CallToolResultFor[Output], error) {
+func (k *Tool) handleKubectlCommand(ctx context.Context, input *Input) (*mcp.CallToolResult, any, error) {
 	args := []string{}
 	
 	// Use provided kubeconfig or default to ~/.kube/config
@@ -374,13 +364,9 @@ func (k *Tool) handleKubectlCommand(ctx context.Context, input *Input) (*mcp.Cal
 		resultText += fmt.Sprintf("\nCommand failed with error: %v", err)
 	}
 
-	result := &mcp.CallToolResultFor[Output]{
+	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{
-				Text: resultText,
-			},
+			&mcp.TextContent{Text: resultText},
 		},
-	}
-
-	return result, nil
+	}, nil, nil
 }
