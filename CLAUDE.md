@@ -26,10 +26,12 @@ Always read `docs/PROJECT_NOTES.md` first to understand the project context and 
 - Always use AutoHalt pattern when using `--continue` flag
 - Protocol: JSON-RPC mode requires flags before executable path
 
-#### MCP Transport (updated)
-- Server uses `mcp.NewSSEHandler()` for proper SSE transport
-- Clients should use `mcp.SSEClientTransport` from official SDK
-- Sessions maintained via persistent HTTP connections with SSE
+#### MCP Transport
+- Server uses `mcp.NewStreamableHTTPHandler()` for streamable HTTP transport
+- Compatible with Claude Code's HTTP transport
+- Clients should use `mcp.StreamableClientTransport` from official SDK
+- Sessions created via POST requests, responses streamed via SSE
+- Tool descriptions include comprehensive usage instructions for LLMs
 
 ## Testing
 See `docs/TESTING.md` for complete testing guide.

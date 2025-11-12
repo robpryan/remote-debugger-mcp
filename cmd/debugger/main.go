@@ -57,8 +57,8 @@ func main() {
 		tool.Register(srv)
 	}
 	// Create HTTP handler for MCP server
-	// Use SSEHandler for proper SSE transport support
-	handler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server {
+	// Use StreamableHTTPHandler for HTTP transport with SSE streaming (Claude Code compatible)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return &srv.Server
 	}, nil)
 

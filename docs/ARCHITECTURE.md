@@ -11,10 +11,10 @@ The Delve MCP tool provides remote debugging capabilities using the Delve JSON-R
 ## Architecture
 
 ```
-MCP Client (Claude/Inspector)
-    ↓ SSE Transport
+MCP Client (Claude Code/SDK)
+    ↓ StreamableClientTransport
 MCP Server (cmd/debugger)
-    ↓ mcp.NewSSEHandler
+    ↓ mcp.NewStreamableHTTPHandler
 Delve Tool (pkg/tools/delve)
     ↓ Session Management
 Delve Client (pkg/tools/delve/client)
@@ -27,9 +27,11 @@ Target Application
 ## Key Components
 
 ### Server (cmd/debugger/main.go)
-- Uses `mcp.NewSSEHandler()` for SSE transport
-- Registers Delve tool
+- Uses `mcp.NewStreamableHTTPHandler()` for streamable HTTP transport
+- Compatible with Claude Code's HTTP transport
+- Registers Delve tool with comprehensive usage instructions
 - Serves on http://localhost:8899/mcp
+- Sessions created via POST, responses streamed via SSE
 
 ### Delve Tool (pkg/tools/delve/)
 - **delve.go** - MCP tool implementation with session management

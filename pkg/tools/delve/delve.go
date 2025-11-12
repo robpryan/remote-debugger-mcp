@@ -93,8 +93,74 @@ func (d *Tool) DelveHandler(ctx context.Context, req *mcp.CallToolRequest, param
 
 func (d *Tool) Register(srv *server.Server) {
 	delveTool := &mcp.Tool{
-		Name:        "delve",
-		Description: "Connects to a remote Delve debugger with session support for interactive debugging",
+		Name: "delve",
+		Description: `Interactive Go debugger using Delve API with persistent session support.
+
+WORKFLOW:
+1. Connect: Use action="connect" with session_id to establish a persistent debugging session
+2. Debug: Execute commands using action="command" with the same session_id
+3. Disconnect: Use action="disconnect" when done (optional - sessions auto-timeout after 30min)
+
+AVAILABLE COMMANDS:
+Execution Control:
+  continue, c      - Resume execution until next breakpoint
+  next, n          - Step over to next source line
+  step, s          - Step into function calls
+  stepout, so      - Step out of current function
+  halt             - Pause execution (required before inspection when program is running)
+  restart, r       - Restart the program
+
+Breakpoints:
+  break, b <location>  - Set breakpoint (e.g., "main.main" or "file.go:42")
+  breakpoints, bp      - List all breakpoints
+  clear <id>           - Remove breakpoint by ID
+  clearall             - Remove all breakpoints
+
+Variable Inspection:
+  print, p <expr>  - Evaluate and print expression
+  locals           - Show local variables
+  args             - Show function arguments
+  vars [regex]     - Show package variables (optionally filtered)
+  whatis <expr>    - Show type of expression
+  set <var>=<val>  - Modify variable value
+
+Stack & Context:
+  stack, bt [depth]    - Show stack trace (default: 10 frames)
+  frame <n>            - Switch to stack frame N
+  list, ls, l [loc]    - Show source code
+
+Goroutines:
+  goroutines, grs [filter]  - List goroutines (filter: all, user, runtime)
+  goroutine, gr <id>        - Switch to goroutine ID
+  goroutine, gr <id> <cmd>  - Run command in goroutine context
+
+Information:
+  funcs [regex]    - List functions (optionally filtered)
+  types [regex]    - List types (optionally filtered)
+  sources [regex]  - List source files (optionally filtered)
+
+PARAMETERS:
+  session_id  - Required. Unique ID for persistent session (string)
+  action      - "connect", "disconnect", or "command" (default: "command")
+  host        - Delve server host (default: "localhost")
+  port        - Delve server port (default: 2345)
+  command     - Command to execute (required for action="command")
+  max_lines   - Maximum output lines to return (default: 1000)
+  offset      - Line offset for paginated output (default: 0)
+
+IMPORTANT NOTES:
+- Sessions persist across multiple calls - reuse the same session_id
+- The debugger uses AutoHalt mode: program is automatically halted before inspection
+- When program is running, "halt" before using inspection commands
+- Use unique session_id per debugging target
+- Sessions automatically cleanup after 30 minutes of inactivity
+
+EXAMPLES:
+1. Connect: {"session_id": "debug-1", "action": "connect", "port": 2345}
+2. Set breakpoint: {"session_id": "debug-1", "action": "command", "command": "break main.main"}
+3. Continue: {"session_id": "debug-1", "action": "command", "command": "continue"}
+4. Inspect locals: {"session_id": "debug-1", "action": "command", "command": "locals"}
+5. Disconnect: {"session_id": "debug-1", "action": "disconnect"}`,
 	}
 
 	mcp.AddTool(&srv.Server, delveTool, d.DelveHandler)

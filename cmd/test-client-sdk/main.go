@@ -23,8 +23,8 @@ func main() {
 		Version: "1.0.0",
 	}, nil)
 
-	// Create SSE transport
-	transport := &mcp.SSEClientTransport{
+	// Create StreamableClientTransport for StreamableHTTPHandler
+	transport := &mcp.StreamableClientTransport{
 		Endpoint: mcpURL,
 	}
 
