@@ -1,6 +1,6 @@
-module github.com/tb0hdan/remote-debugger-mcp
+module github.com/robpryan/remote-debugger-mcp
 
-go 1.24
+go 1.25
 
 require (
 	github.com/go-delve/delve v1.25.2

@@ -54,31 +54,30 @@ func main() {
 	fmt.Printf("Numbers: %v\n", numbers)
 	fmt.Println()
 
-	// Start some goroutines
-	var wg sync.WaitGroup
+	// Start some goroutines (all run forever)
 
 	// Goroutine 1: Counter incrementer
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for {
 			counter.Increment()
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 
-	// Goroutine 2: Number processor
-	wg.Add(1)
+	// Goroutine 2: Number processor (runs forever)
 	go func() {
-		defer wg.Done()
-		processNumbers(numbers)
+		for {
+			processNumbers(numbers)
+			time.Sleep(3 * time.Second)
+		}
 	}()
 
-	// Goroutine 3: Person updater
-	wg.Add(1)
+	// Goroutine 3: Person updater (runs forever)
 	go func() {
-		defer wg.Done()
-		updatePerson(&person)
+		for {
+			updatePerson(&person)
+			time.Sleep(2 * time.Second)
+		}
 	}()
 
 	// Main loop
@@ -102,19 +101,9 @@ func main() {
 		demonstrateLocalVars()
 
 		time.Sleep(2 * time.Second)
-
-		// Break after 50 iterations to prevent infinite running
-		if iteration >= 50 {
-			fmt.Println("\nReached 50 iterations, exiting...")
-			break
-		}
 	}
 
-	// Wait for goroutines (they'll timeout but that's ok for testing)
-	fmt.Println("\nWaiting for goroutines...")
-	wg.Wait()
-
-	fmt.Println("\n=== Application Finished ===")
+	// This will never be reached - program runs until killed
 }
 
 // calculateSum adds all numbers in a slice

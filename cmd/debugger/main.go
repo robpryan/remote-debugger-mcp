@@ -6,20 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/robpryan/remote-debugger-mcp/pkg/server"
+	"github.com/robpryan/remote-debugger-mcp/pkg/tools"
+	"github.com/robpryan/remote-debugger-mcp/pkg/tools/delve"
 	"github.com/rs/zerolog"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/server"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/tools"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/tools/delve"
 )
 
 const (
@@ -28,26 +26,13 @@ const (
 	ShutdownTimeout = 10 * time.Second
 )
 
-//go:embed VERSION
-var Version string
-
 func main() {
 	var (
-		debug        bool
-		bindAddr     string
-		printVersion bool
+		debug    bool
+		bindAddr string
 	)
 	flag.BoolVar(&debug, "debug", false, "debug mode")
 	flag.StringVar(&bindAddr, "bind", "localhost:8899", "bind address (host:port)")
-	flag.BoolVar(&printVersion, "version", false, "print version and exit")
-	flag.Parse()
-	// Sanitize version
-	version := strings.TrimSpace(Version)
-	// Check if the version flag is set
-	if printVersion {
-		fmt.Printf("%s Version: %s", ServiceName, version)
-		os.Exit(0)
-	}
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -60,7 +45,7 @@ func main() {
 
 	impl := &mcp.Implementation{
 		Name:    ServerName,
-		Version: version,
+		Version: "1.0",
 	}
 
 	srv := server.NewServer(impl)
@@ -72,7 +57,8 @@ func main() {
 		tool.Register(srv)
 	}
 	// Create HTTP handler for MCP server
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+	// Use SSEHandler for proper SSE transport support
+	handler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server {
 		return &srv.Server
 	}, nil)
 
@@ -82,7 +68,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"service": ServiceName,
-			"version": version,
+			"version": "1.0",
 			"endpoints": map[string]string{
 				"mcp": "/mcp",
 			},

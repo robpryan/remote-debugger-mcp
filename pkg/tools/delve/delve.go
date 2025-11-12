@@ -9,11 +9,11 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/robpryan/remote-debugger-mcp/pkg/server"
+	"github.com/robpryan/remote-debugger-mcp/pkg/tools"
+	"github.com/robpryan/remote-debugger-mcp/pkg/tools/delve/client"
+	"github.com/robpryan/remote-debugger-mcp/pkg/types"
 	"github.com/rs/zerolog"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/server"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/tools"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/tools/delve/client"
-	"github.com/tb0hdan/remote-debugger-mcp/pkg/types"
 )
 
 const (
