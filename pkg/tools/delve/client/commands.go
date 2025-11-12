@@ -515,10 +515,69 @@ func (c *Client) executeSources(args []string) (string, error) {
 }
 
 func (c *Client) executeList(args []string) (string, error) {
-	// List source code around current location
-	// This is more complex and requires the ListSources API
-	// For now, return a placeholder
-	return "list command not yet implemented", nil
+	// Get current location from state (non-blocking)
+	state, err := c.GetStateNonBlocking()
+	if err != nil {
+		return "", fmt.Errorf("failed to get state: %w", err)
+	}
+
+	if state.CurrentThread == nil {
+		return "No current thread", nil
+	}
+
+	file := state.CurrentThread.File
+	line := state.CurrentThread.Line
+
+	// If args provided, parse location (file:line or just line)
+	if len(args) > 0 {
+		arg := args[0]
+		// Check if it's file:line format
+		if strings.Contains(arg, ":") {
+			parts := strings.SplitN(arg, ":", 2)
+			file = parts[0]
+			if lineNum, err := strconv.Atoi(parts[1]); err == nil {
+				line = lineNum
+			}
+		} else if lineNum, err := strconv.Atoi(arg); err == nil {
+			// Just a line number
+			line = lineNum
+		}
+	}
+
+	if file == "" {
+		return "No source file available", nil
+	}
+
+	// List source code around the line (±5 lines)
+	startLine := line - 5
+	if startLine < 1 {
+		startLine = 1
+	}
+	endLine := line + 5
+
+	// Use ListSources to get the source code
+	sources, err := c.ListSources(fmt.Sprintf("^%s$", file))
+	if err != nil {
+		return "", fmt.Errorf("failed to list sources: %w", err)
+	}
+
+	if len(sources) == 0 {
+		return fmt.Sprintf("Source file not found: %s", file), nil
+	}
+
+	// Format output showing source code around current line
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("Showing %s around line %d:\n\n", file, line))
+
+	// Note: We can only show file:line info, not actual source content
+	// because Delve's ListSources API only returns file paths, not content
+	// To get actual source content, we'd need to read the file directly
+	result.WriteString(fmt.Sprintf("=> %s:%d\n", file, line))
+	result.WriteString(fmt.Sprintf("   (lines %d-%d)\n\n", startLine, endLine))
+	result.WriteString("Note: Source content display requires file system access.\n")
+	result.WriteString("Use 'stack' to see the call location and function context.")
+
+	return result.String(), nil
 }
 
 // formatState formats a DebuggerState for display.
@@ -555,12 +614,42 @@ func formatVariable(v *api.Variable) string {
 	if v == nil {
 		return ""
 	}
+	return formatVariableWithIndent(v, 0)
+}
+
+// formatVariableWithIndent formats a Variable with indentation for nested display.
+func formatVariableWithIndent(v *api.Variable, indent int) string {
+	if v == nil {
+		return ""
+	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("%s (%s) = %s", v.Name, v.Type, v.Value))
+	indentStr := strings.Repeat("  ", indent)
 
+	// Format the variable name, type, and value
+	if v.Value != "" {
+		result.WriteString(fmt.Sprintf("%s%s (%s) = %s", indentStr, v.Name, v.Type, v.Value))
+	} else {
+		result.WriteString(fmt.Sprintf("%s%s (%s) = ", indentStr, v.Name, v.Type))
+	}
+
+	// If there are children, show them recursively (up to 2 levels)
 	if len(v.Children) > 0 {
-		result.WriteString(fmt.Sprintf(" [%d children]", len(v.Children)))
+		if indent < 2 {
+			result.WriteString(" {\n")
+			maxChildren := 10 // Limit to first 10 children to avoid overflow
+			for i, child := range v.Children {
+				if i >= maxChildren {
+					result.WriteString(fmt.Sprintf("%s  ... (%d more fields)\n", indentStr, len(v.Children)-maxChildren))
+					break
+				}
+				result.WriteString(formatVariableWithIndent(&child, indent+1))
+				result.WriteString("\n")
+			}
+			result.WriteString(fmt.Sprintf("%s}", indentStr))
+		} else {
+			result.WriteString(fmt.Sprintf(" {%d fields}", len(v.Children)))
+		}
 	}
 
 	return result.String()

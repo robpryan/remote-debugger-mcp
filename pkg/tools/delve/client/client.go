@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
@@ -81,29 +80,14 @@ func (c *Client) GetState() (*api.DebuggerState, error) {
 	return state, nil
 }
 
-// GetStateNonBlocking attempts to get state with a timeout to avoid blocking.
-// Returns an error if the operation times out.
-func (c *Client) GetStateNonBlocking(timeout time.Duration) (*api.DebuggerState, error) {
-	stateCh := make(chan *api.DebuggerState, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		state, err := c.rpcClient.GetState()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		stateCh <- state
-	}()
-
-	select {
-	case state := <-stateCh:
-		return state, nil
-	case err := <-errCh:
-		return nil, err
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("get state timed out after %v (program may still be running)", timeout)
+// GetStateNonBlocking returns the current debugger state without blocking.
+// Unlike GetState(), this returns immediately even if the program is running.
+func (c *Client) GetStateNonBlocking() (*api.DebuggerState, error) {
+	state, err := c.rpcClient.GetStateNonBlocking()
+	if err != nil {
+		return nil, fmt.Errorf("get state non-blocking failed: %w", err)
 	}
+	return state, nil
 }
 
 // ensureHalted ensures the program is halted before inspection operations.

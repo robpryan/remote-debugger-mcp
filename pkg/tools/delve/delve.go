@@ -88,7 +88,13 @@ func (d *Tool) DelveHandler(ctx context.Context, req *mcp.CallToolRequest, param
 	}
 
 	// Non-session mode (backward compatibility)
-	return d.handleSessionOperation(ctx, *params, host, port, action)
+	result, data, err := d.handleSessionOperation(ctx, *params, host, port, action)
+	if err != nil {
+		d.logger.Error().Err(err).Msgf("DelveHandler returning error to MCP for session %s", params.SessionID)
+	} else {
+		d.logger.Debug().Msgf("DelveHandler returning success to MCP for session %s", params.SessionID)
+	}
+	return result, data, err
 }
 
 func (d *Tool) Register(srv *server.Server) {
@@ -191,7 +197,7 @@ func (d *Tool) cleanupStaleSessions() {
 }
 
 // connectSession creates a new Delve API session.
-func (d *Tool) connectSession(_ context.Context, sessionID, host string, port int) (*DelveSession, error) {
+func (d *Tool) connectSession(ctx context.Context, sessionID, host string, port int) (*DelveSession, error) {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	d.logger.Info().Msgf("Creating new Delve API session %s at %s", sessionID, addr)
 
@@ -202,7 +208,60 @@ func (d *Tool) connectSession(_ context.Context, sessionID, host string, port in
 		AutoHalt: true, // Automatically halt before inspection operations
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Delve API: %w", err)
+		return nil, fmt.Errorf("failed to create Delve client: %w", err)
+	}
+
+	// Test the connection with a timeout
+	// Use a channel to make the blocking GetState() call timeout-aware
+	type stateResult struct {
+		err error
+	}
+	resultCh := make(chan stateResult, 1)
+
+	d.logger.Debug().Msgf("Starting connection test goroutine for %s", addr)
+	go func() {
+		d.logger.Debug().Msgf("Calling GetStateNonBlocking() for %s", addr)
+		_, err := apiClient.GetStateNonBlocking()
+		d.logger.Debug().Msgf("GetStateNonBlocking() returned for %s: err=%v", addr, err)
+		resultCh <- stateResult{err}
+	}()
+
+	// Wait for connection test with 5 second timeout
+	d.logger.Debug().Msgf("Waiting for connection test with 5s timeout for %s", addr)
+	select {
+	case result := <-resultCh:
+		d.logger.Debug().Msgf("Received result from GetState() for %s", addr)
+		if result.err != nil {
+			d.logger.Error().Err(result.err).Msgf("GetState() failed for %s", addr)
+			// Close in background to avoid blocking
+			go func() {
+				if err := apiClient.Close(); err != nil {
+					d.logger.Debug().Err(err).Msg("Error closing failed client")
+				}
+			}()
+			return nil, fmt.Errorf("failed to connect to Delve server at %s: %w", addr, result.err)
+		}
+		d.logger.Debug().Msgf("GetState() succeeded for %s", addr)
+	case <-time.After(5 * time.Second):
+		d.logger.Warn().Msgf("Connection to %s timed out after 5 seconds", addr)
+		// Close in background to avoid blocking - the connection might be hanging
+		go func() {
+			if err := apiClient.Close(); err != nil {
+				d.logger.Debug().Err(err).Msg("Error closing timed-out client (this is expected)")
+			}
+		}()
+		timeoutErr := fmt.Errorf("connection to Delve server at %s timed out after 5 seconds", addr)
+		d.logger.Error().Err(timeoutErr).Msg("Returning timeout error from connectSession")
+		return nil, timeoutErr
+	case <-ctx.Done():
+		d.logger.Warn().Msgf("Connection to %s cancelled", addr)
+		// Close in background to avoid blocking
+		go func() {
+			if err := apiClient.Close(); err != nil {
+				d.logger.Debug().Err(err).Msg("Error closing cancelled client")
+			}
+		}()
+		return nil, fmt.Errorf("connection cancelled: %w", ctx.Err())
 	}
 
 	session := &DelveSession{
@@ -302,6 +361,7 @@ func (d *Tool) handleConnect(ctx context.Context, input Input, host string, port
 	session, err := d.connectSession(ctx, input.SessionID, host, port)
 	if err != nil {
 		d.sessionMu.Unlock()
+		d.logger.Error().Err(err).Msgf("Failed to connect session %s, returning error to client", input.SessionID)
 		return nil, nil, err
 	}
 
