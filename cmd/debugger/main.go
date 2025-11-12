@@ -2,28 +2,22 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/robpryan/remote-debugger-mcp/pkg/server"
-	"github.com/robpryan/remote-debugger-mcp/pkg/tools"
-	"github.com/robpryan/remote-debugger-mcp/pkg/tools/delve"
+	"github.com/robpryan/go-debugger-mcp/pkg/tools/delve"
 	"github.com/rs/zerolog"
 )
 
 const (
-	ServerName      = "remote-debugger-mcp"
-	ServiceName     = "Remote Debugger MCP Connector"
-	ShutdownTimeout = 10 * time.Second
+	ServerName  = "go-debugger-mcp"
+	ServiceName = "Go Debugger MCP Server"
 )
 
 func main() {
@@ -48,18 +42,16 @@ func main() {
 		Version: "1.0",
 	}
 
-	srv := server.NewServer(impl)
-	toolList := []tools.Tool{
-		delve.New(logger),
-	}
-	// Register all tools
-	for _, tool := range toolList {
-		tool.Register(srv)
-	}
+	srv := mcp.NewServer(impl, nil)
+
+	// Register Delve tool
+	delveTool := delve.New(logger)
+	delveTool.Register(srv)
+
 	// Create HTTP handler for MCP server
 	// Use StreamableHTTPHandler for HTTP transport with SSE streaming (Claude Code compatible)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return &srv.Server
+		return srv
 	}, nil)
 
 	http.Handle("/mcp", handler)
@@ -84,12 +76,5 @@ func main() {
 		}
 	}()
 	<-signalCtx.Done()
-	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
-	defer cancel()
-	// Shutdown MCP server
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error().Msgf("%s shutdown error: %v", ServiceName, err)
-	} else {
-		logger.Info().Msgf("%s shutdown complete", ServiceName)
-	}
+	logger.Info().Msgf("%s shutdown complete", ServiceName)
 }

@@ -14,4 +14,4 @@ echo "MCP endpoint: http://localhost:8899/mcp"
 echo "Use Ctrl+C to stop"
 echo ""
 
-./build/remote-debugger-mcp --debug
+./build/go-debugger-mcp --debug

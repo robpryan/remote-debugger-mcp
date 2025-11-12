@@ -4,9 +4,8 @@
 Always read `docs/PROJECT_NOTES.md` first to understand the project context and current state.
 
 ## Project Commands
-- Lint: `make lint`
-- Test: `make test`
 - Build: `make build`
+- Test: `make test`
 
 ## Documentation Structure
 

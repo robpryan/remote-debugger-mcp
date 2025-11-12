@@ -9,10 +9,8 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/robpryan/remote-debugger-mcp/pkg/server"
-	"github.com/robpryan/remote-debugger-mcp/pkg/tools"
-	"github.com/robpryan/remote-debugger-mcp/pkg/tools/delve/client"
-	"github.com/robpryan/remote-debugger-mcp/pkg/types"
+	"github.com/robpryan/go-debugger-mcp/pkg/tools/delve/client"
+	"github.com/robpryan/go-debugger-mcp/pkg/types"
 	"github.com/rs/zerolog"
 )
 
@@ -97,7 +95,8 @@ func (d *Tool) DelveHandler(ctx context.Context, req *mcp.CallToolRequest, param
 	return result, data, err
 }
 
-func (d *Tool) Register(srv *server.Server) {
+// Register registers the Delve tool with the MCP server.
+func (d *Tool) Register(srv *mcp.Server) {
 	delveTool := &mcp.Tool{
 		Name: "delve",
 		Description: `Interactive Go debugger using Delve API with persistent session support.
@@ -169,11 +168,22 @@ EXAMPLES:
 5. Disconnect: {"session_id": "debug-1", "action": "disconnect"}`,
 	}
 
-	mcp.AddTool(&srv.Server, delveTool, d.DelveHandler)
+	mcp.AddTool(srv, delveTool, d.DelveHandler)
 	d.logger.Debug().Msg("delve tool registered")
 
 	// Start cleanup goroutine for stale sessions
 	go d.cleanupStaleSessions()
+}
+
+// New creates a new Delve tool instance.
+func New(logger zerolog.Logger) *Tool {
+	validate := validator.New()
+
+	return &Tool{
+		logger:    logger.With().Str("tool", "delve").Logger(),
+		validator: validate,
+		sessions:  make(map[string]*DelveSession),
+	}
 }
 
 // cleanupStaleSessions removes sessions that haven't been used for 30 minutes.
@@ -453,14 +463,4 @@ func (d *Tool) handleCommand(input Input) (*mcp.CallToolResult, any, error) {
 			&mcp.TextContent{Text: resultText},
 		},
 	}, nil, nil
-}
-
-func New(logger zerolog.Logger) tools.Tool {
-	validate := validator.New()
-
-	return &Tool{
-		logger:    logger.With().Str("tool", "delve").Logger(),
-		validator: validate,
-		sessions:  make(map[string]*DelveSession),
-	}
 }

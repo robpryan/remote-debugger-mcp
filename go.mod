@@ -1,4 +1,4 @@
-module github.com/robpryan/remote-debugger-mcp
+module github.com/robpryan/go-debugger-mcp
 
 go 1.25
 

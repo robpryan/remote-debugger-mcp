@@ -31,9 +31,23 @@ This will:
 2. Start it on http://localhost:8899
 3. Enable debug logging
 
-### Terminal 3: Test with MCP Tool
+### Terminal 3: Run the Test Client
 
-Now you can test the MCP tool. Here are example commands:
+The easiest way to test is using the included SDK-based test client:
+
+```bash
+./scripts/test-mcp-client.sh
+```
+
+This script runs a comprehensive test suite that:
+1. Connects to the Delve session
+2. Sets a breakpoint at `main.calculateSum`
+3. Continues execution until the breakpoint is hit
+4. Inspects local variables and goroutines
+5. Gets the stack trace
+6. Disconnects cleanly
+
+Alternatively, you can test manually using curl commands:
 
 #### 1. Connect to Delve Session
 
@@ -243,7 +257,7 @@ The test application (`cmd/test-app/main.go`) includes:
 - **Multiple Goroutines**: 3 concurrent goroutines for testing goroutine inspection
 - **Various Data Types**: structs, slices, maps, primitives
 - **Recursive Functions**: `calculateFactorial()` for stack trace testing
-- **Loop Iterations**: Main loop runs 50 times for repeated breakpoint testing
+- **Continuous Execution**: Runs indefinitely for testing (stop with Ctrl+C)
 - **Local Variables**: `demonstrateLocalVars()` has many variable types
 - **Shared State**: `Counter` type with mutex for concurrency testing
 

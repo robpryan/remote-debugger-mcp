@@ -13,7 +13,7 @@ import (
 const mcpURL = "http://localhost:8899/mcp"
 
 func main() {
-	fmt.Println("=== MCP Delve Test Client (Using Official SDK) ===\n")
+	fmt.Println("=== MCP Delve Test Client (Using Official SDK) ===")
 
 	ctx := context.Background()
 
@@ -35,7 +35,7 @@ func main() {
 		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer session.Close()
-	fmt.Println("✓ Connected and initialized\n")
+	fmt.Println("✓ Connected and initialized")
 
 	sessionID := "test-sdk-session"
 

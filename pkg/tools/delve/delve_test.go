@@ -273,11 +273,9 @@ func (suite *DelveTestSuite) TestNewCreatesValidTool() {
 	tool := New(logger)
 
 	suite.NotNil(tool)
-	delveTool, ok := tool.(*Tool)
-	suite.True(ok)
-	suite.NotNil(delveTool.validator)
-	suite.NotNil(delveTool.logger)
-	suite.NotNil(delveTool.sessions)
+	suite.NotNil(tool.validator)
+	suite.NotNil(tool.logger)
+	suite.NotNil(tool.sessions)
 }
 
 func (suite *DelveTestSuite) TestSessionManagement() {
