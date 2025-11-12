@@ -228,7 +228,7 @@ func (suite *DelveTestSuite) TestInputValidation() {
 
 func (suite *DelveTestSuite) TestDelveHandlerValidation() {
 	ctx := context.Background()
-	session := &mcp.ServerSession{}
+	req := &mcp.CallToolRequest{}
 
 	testCases := []struct {
 		name        string
@@ -255,11 +255,7 @@ func (suite *DelveTestSuite) TestDelveHandlerValidation() {
 
 	for _, tc := range testCases {
 		suite.Run(tc.name, func() {
-			params := &mcp.CallToolParamsFor[Input]{
-				Arguments: tc.input,
-			}
-			
-			_, err := suite.tool.DelveHandler(ctx, session, params)
+			_, _, err := suite.tool.DelveHandler(ctx, req, &tc.input)
 			if tc.shouldError {
 				suite.Error(err)
 				suite.Contains(err.Error(), "validation error")
@@ -275,7 +271,7 @@ func (suite *DelveTestSuite) TestDelveHandlerValidation() {
 func (suite *DelveTestSuite) TestNewCreatesValidTool() {
 	logger := zerolog.Nop()
 	tool := New(logger)
-	
+
 	suite.NotNil(tool)
 	delveTool, ok := tool.(*Tool)
 	suite.True(ok)
@@ -286,30 +282,26 @@ func (suite *DelveTestSuite) TestNewCreatesValidTool() {
 
 func (suite *DelveTestSuite) TestSessionManagement() {
 	ctx := context.Background()
-	session := &mcp.ServerSession{}
+	req := &mcp.CallToolRequest{}
 
 	// Test disconnect non-existent session
-	params := &mcp.CallToolParamsFor[Input]{
-		Arguments: Input{
-			SessionID: "nonexistent",
-			Action:    "disconnect",
-		},
+	input := &Input{
+		SessionID: "nonexistent",
+		Action:    "disconnect",
 	}
-	
-	_, err := suite.tool.DelveHandler(ctx, session, params)
+
+	_, _, err := suite.tool.DelveHandler(ctx, req, input)
 	suite.Error(err)
 	suite.Contains(err.Error(), "not found")
 
 	// Test command on non-existent session
-	params = &mcp.CallToolParamsFor[Input]{
-		Arguments: Input{
-			SessionID: "nonexistent",
-			Action:    "command",
-			Command:   "help",
-		},
+	input = &Input{
+		SessionID: "nonexistent",
+		Action:    "command",
+		Command:   "help",
 	}
-	
-	_, err = suite.tool.DelveHandler(ctx, session, params)
+
+	_, _, err = suite.tool.DelveHandler(ctx, req, input)
 	suite.Error(err)
 	suite.Contains(err.Error(), "not found")
 }
